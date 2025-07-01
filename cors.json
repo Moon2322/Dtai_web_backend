@@ -1,0 +1,7 @@
+[
+    {
+      "origin": ["https://frontend-ffc.vercel.app", "http://localhost:5173"],
+      "method": ["GET", "HEAD", "PUT", "POST", "DELETE"],
+      "maxAgeSeconds": 3600
+    }
+  ]
