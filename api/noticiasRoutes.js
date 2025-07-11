@@ -1,0 +1,371 @@
+import express from 'express';
+import { db } from '../index.js';
+import { verifyToken } from '../middleware/auth.js';
+
+const router = express.Router();
+
+router.get('/noticias', async (req, res) => {
+    try {
+        const { search, categoria, estado } = req.query;
+        
+        let query = `
+            SELECT n.*, 
+                   d.id as directivo_id,
+                   u.nombre, u.apellido,
+                   c.nombre as categoria_nombre, c.color as categoria_color
+            FROM noticias n
+            JOIN directivos d ON n.autor_id = d.id
+            JOIN usuarios u ON d.usuario_id = u.id
+            JOIN categorias_noticias c ON n.categoria_id = c.id
+            WHERE 1=1
+        `;
+        
+        const params = [];
+        
+        if (search && search !== '') {
+            query += ` AND (n.titulo LIKE ? OR n.contenido LIKE ?)`;
+            params.push(`%${search}%`, `%${search}%`);
+        }
+        
+        if (categoria && categoria !== 'todas') {
+            query += ` AND c.nombre = ?`;
+            params.push(categoria);
+        }
+        
+        if (estado && estado !== 'todos') {
+            query += ` AND n.publicada = ?`;
+            params.push(estado === 'publicada' ? 1 : 0);
+        }
+        
+        query += ` ORDER BY n.fecha_creacion DESC`;
+        
+        const [noticias] = await db.execute(query, params);
+        
+        res.json({
+            success: true,
+            data: noticias
+        });
+        
+    } catch (error) {
+        console.error('Error al obtener noticias:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor',
+            error: error.message
+        });
+    }
+});
+
+router.get('/noticias/stats', async (req, res) => {
+    try {
+        const [noticiasPublicadas] = await db.execute(`
+            SELECT COUNT(*) as total FROM noticias WHERE publicada = TRUE
+        `);
+        
+        const [borradores] = await db.execute(`
+            SELECT COUNT(*) as total FROM noticias WHERE publicada = FALSE
+        `);
+        
+        const [totalVistas] = await db.execute(`
+            SELECT SUM(vistas) as total FROM noticias WHERE publicada = TRUE
+        `);
+        
+        const [categoriasActivas] = await db.execute(`
+            SELECT COUNT(*) as total FROM categorias_noticias WHERE activo = TRUE
+        `);
+        
+        res.json({
+            success: true,
+            data: {
+                noticiasPublicadas: noticiasPublicadas[0].total,
+                borradores: borradores[0].total,
+                totalVistas: totalVistas[0].total || 0,
+                categoriasActivas: categoriasActivas[0].total
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error al obtener estadísticas:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+router.get('/categorias-noticias', async (req, res) => {
+    try {
+        const [categorias] = await db.execute(
+            'SELECT * FROM categorias_noticias WHERE activo = TRUE ORDER BY orden, nombre'
+        );
+        
+        res.json({
+            success: true,
+            data: categorias
+        });
+        
+    } catch (error) {
+        console.error('Error al obtener categorías:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+router.get('/debug/user-info', verifyToken, async (req, res) => {
+    try {
+        console.log('Token user info:', req.user);
+        
+        const [usuario] = await db.execute(
+            'SELECT * FROM usuarios WHERE correo = ?',
+            [req.user.correo]
+        );
+        
+        const [directivo] = await db.execute(
+            `SELECT d.* FROM directivos d 
+             JOIN usuarios u ON d.usuario_id = u.id 
+             WHERE u.correo = ?`,
+            [req.user.correo]
+        );
+        
+        res.json({
+            success: true,
+            data: {
+                tokenInfo: req.user,
+                usuario: usuario[0] || 'No encontrado',
+                directivo: directivo[0] || 'No encontrado'
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error en debug:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+});
+router.post('/noticias', verifyToken, async (req, res) => {
+    try {
+        console.log('Usuario autenticado:', req.user);
+        console.log('Datos de la noticia:', req.body);
+        
+        const {
+            titulo,
+            contenido,
+            resumen,
+            categoria_id,
+            es_destacada,
+            publicada
+        } = req.body;
+        
+        if (!titulo || !contenido || !categoria_id) {
+            return res.status(400).json({
+                success: false,
+                message: 'Los campos título, contenido y categoría son requeridos'
+            });
+        }
+        const [directivo] = await db.execute(
+            `SELECT d.id, u.nombre, u.apellido 
+             FROM directivos d 
+             JOIN usuarios u ON d.usuario_id = u.id 
+             WHERE u.correo = ? AND u.activo = TRUE`,
+            [req.user.correo]
+        );
+        
+        console.log('Directivo encontrado:', directivo);
+        
+        if (directivo.length === 0) {
+            const [usuarioData] = await db.execute(
+                'SELECT id FROM usuarios WHERE correo = ? AND rol = "directivo"',
+                [req.user.correo]
+            );
+            
+            if (usuarioData.length > 0) {
+                await db.execute(
+                    `INSERT INTO directivos (usuario_id, numero_empleado, cargo, nivel_acceso, fecha_nombramiento)
+                     VALUES (?, ?, 'Director', 'director', NOW())`,
+                    [usuarioData[0].id, 'DIR' + Date.now()]
+                );
+                
+                const [nuevoDirectivo] = await db.execute(
+                    `SELECT d.id FROM directivos d 
+                     JOIN usuarios u ON d.usuario_id = u.id 
+                     WHERE u.correo = ?`,
+                    [req.user.correo]
+                );
+                
+                if (nuevoDirectivo.length === 0) {
+                    return res.status(403).json({
+                        success: false,
+                        message: 'Error al crear perfil de directivo'
+                    });
+                }
+                
+                const autorId = nuevoDirectivo[0].id;
+                
+                const [result] = await db.execute(`
+                    INSERT INTO noticias (
+                        titulo, contenido, resumen, autor_id, categoria_id,
+                        es_destacada, publicada, fecha_publicacion
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                `, [
+                    titulo,
+                    contenido,
+                    resumen || null,
+                    autorId,
+                    categoria_id,
+                    es_destacada || false,
+                    publicada || false,
+                    publicada ? new Date() : null
+                ]);
+                
+                return res.json({
+                    success: true,
+                    message: 'Noticia creada exitosamente',
+                    data: { id: result.insertId }
+                });
+            } else {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Solo los directivos pueden crear noticias. Usuario no encontrado o no es directivo.'
+                });
+            }
+        }
+        
+        const autorId = directivo[0].id;
+        
+        const [result] = await db.execute(`
+            INSERT INTO noticias (
+                titulo, contenido, resumen, autor_id, categoria_id,
+                es_destacada, publicada, fecha_publicacion
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+            titulo,
+            contenido,
+            resumen || null,
+            autorId,
+            categoria_id,
+            es_destacada || false,
+            publicada || false,
+            publicada ? new Date() : null
+        ]);
+        
+        res.json({
+            success: true,
+            message: 'Noticia creada exitosamente',
+            data: { id: result.insertId }
+        });
+        
+    } catch (error) {
+        console.error('Error al crear noticia:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor',
+            error: error.message
+        });
+    }
+});
+
+router.put('/noticias/:id', verifyToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const {
+            titulo,
+            contenido,
+            resumen,
+            categoria_id,
+            es_destacada,
+            publicada
+        } = req.body;
+        const [noticia] = await db.execute(
+            'SELECT * FROM noticias WHERE id = ?',
+            [id]
+        );
+        
+        if (noticia.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Noticia no encontrada'
+            });
+        }
+        let fechaPublicacion = noticia[0].fecha_publicacion;
+        if (publicada && !noticia[0].publicada) {
+            fechaPublicacion = new Date();
+        } else if (!publicada) {
+            fechaPublicacion = null;
+        }
+        
+        await db.execute(`
+            UPDATE noticias SET
+                titulo = ?, contenido = ?, resumen = ?, categoria_id = ?,
+                es_destacada = ?, publicada = ?, fecha_publicacion = ?
+            WHERE id = ?
+        `, [
+            titulo, contenido, resumen, categoria_id,
+            es_destacada, publicada, fechaPublicacion, id
+        ]);
+        
+        res.json({
+            success: true,
+            message: 'Noticia actualizada exitosamente'
+        });
+        
+    } catch (error) {
+        console.error('Error al actualizar noticia:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor',
+            error: error.message
+        });
+    }
+});
+router.delete('/noticias/:id', verifyToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        await db.execute(
+            'UPDATE noticias SET publicada = FALSE, fecha_publicacion = NULL WHERE id = ?', 
+            [id]
+        );
+        
+        res.json({
+            success: true,
+            message: 'Noticia despublicada exitosamente (baja lógica)'
+        });
+        
+    } catch (error) {
+        console.error('Error al despublicar noticia:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor',
+            error: error.message
+        });
+    }
+});
+router.patch('/noticias/:id/publicar', verifyToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { publicada } = req.body;
+        
+        const fechaPublicacion = publicada ? new Date() : null;
+        
+        await db.execute(
+            'UPDATE noticias SET publicada = ?, fecha_publicacion = ? WHERE id = ?',
+            [publicada, fechaPublicacion, id]
+        );
+        
+        res.json({
+            success: true,
+            message: `Noticia ${publicada ? 'publicada' : 'despublicada'} exitosamente`
+        });
+        
+    } catch (error) {
+        console.error('Error al cambiar estado de publicación:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor',
+            error: error.message
+        });
+    }
+});
+
+export default router;
