@@ -33,7 +33,6 @@ router.get('/estudiante/calificaciones/por-cuatrimestre', verifyToken, async (re
                 c.fecha_captura,
                 a.nombre AS asignatura,
                 a.codigo AS codigo_asignatura,
-                a.creditos,
                 a.cuatrimestre,
                 CONCAT(u.nombre, ' ', u.apellido) AS profesor
             FROM calificaciones c
@@ -81,12 +80,11 @@ router.get('/estudiante/calificaciones/estadisticas', verifyToken, async (req, r
                 COUNT(CASE WHEN estatus = 'reprobado' THEN 1 END) as materias_reprobadas,
                 COUNT(CASE WHEN estatus = 'cursando' THEN 1 END) as materias_cursando,
                 COUNT(CASE WHEN estatus = 'extraordinario' THEN 1 END) as materias_extraordinario,
-                AVG(CASE WHEN calificacion_final IS NOT NULL AND calificacion_final > 0 THEN calificacion_final END) as promedio_general,
-                SUM(CASE WHEN estatus = 'aprobado' THEN a.creditos ELSE 0 END) as creditos_aprobados
-            FROM calificaciones c
-            INNER JOIN asignaturas a ON c.asignatura_id = a.id
-            WHERE c.alumno_id = ?
+                AVG(CASE WHEN calificacion_final IS NOT NULL AND calificacion_final > 0 THEN calificacion_final END) as promedio_general
+            FROM calificaciones
+            WHERE alumno_id = ?
         `, [alumnoId]);
+
 
         res.json(stats[0]);
     } catch (error) {
@@ -150,7 +148,6 @@ router.get('/estudiante/calificaciones/detalle/:asignaturaId', verifyToken, asyn
                 c.*,
                 a.nombre AS asignatura,
                 a.codigo AS codigo_asignatura,
-                a.creditos,
                 a.cuatrimestre,
                 a.descripcion AS descripcion_asignatura,
                 CONCAT(u.nombre, ' ', u.apellido) AS profesor,
@@ -193,7 +190,6 @@ router.get('/estudiante/calificaciones/materias-pendientes', verifyToken, async 
                 a.id,
                 a.nombre AS asignatura,
                 a.codigo,
-                a.creditos,
                 a.cuatrimestre,
                 CASE 
                     WHEN c.id IS NULL THEN 'pendiente'

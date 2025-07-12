@@ -14,6 +14,7 @@ import noticiasRoutes from './api/noticiasRoutes.js';
 import reportesRoutes from './api/reportesRoutes.js';
 import chatbotRoutes from './api/chatbotRoutes.js';
 import estudiantesRoutes from './api/estudiantesRoutes.js';
+import estudianteRoutes from './api/estudianteRoutes.js';
 
 dotenv.config();
 const app = express();
@@ -70,6 +71,8 @@ app.use('/api', noticiasRoutes);
 app.use('/api', reportesRoutes);
 app.use('/api', chatbotRoutes);
 app.use('/api', estudiantesRoutes);
+app.use('/api', estudianteRoutes);
+
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 ${PORT}`));

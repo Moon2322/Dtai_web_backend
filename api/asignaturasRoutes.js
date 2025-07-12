@@ -82,13 +82,11 @@ router.post('/asignaturas', async (req, res) => {
             codigo,
             nombre,
             descripcion,
-            creditos,
             horas_teoricas,
             horas_practicas,
             complejidad,
             cuatrimestre,
-            carrera_id,
-            prerequisitos
+            carrera_id
         } = req.body;
         
         console.log('Datos recibidos:', req.body);
@@ -120,21 +118,18 @@ router.post('/asignaturas', async (req, res) => {
         
         const [result] = await db.execute(`
             INSERT INTO asignaturas (
-                codigo, nombre, descripcion, creditos, horas_teoricas, 
-                horas_practicas, complejidad, cuatrimestre, carrera_id, 
-                prerequisitos, activa
+                codigo, nombre, descripcion, horas_teoricas, 
+                horas_practicas, complejidad, cuatrimestre, carrera_id, activa
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
         `, [
             codigo, 
             nombre, 
-            descripcion || null, 
-            creditos || 5,
-            horas_teoricas || 3, 
-            horas_practicas || 2, 
-            complejidad || 5,
+            descripcion,
+            horas_teoricas ,
+            horas_practicas , 
+            complejidad ,
             cuatrimestre, 
             carrera_id, 
-            prerequisitos || null
         ]);
         
         res.json({
@@ -159,13 +154,11 @@ router.put('/asignaturas/:id', async (req, res) => {
             codigo,
             nombre,
             descripcion,
-            creditos,
             horas_teoricas,
             horas_practicas,
             complejidad,
             cuatrimestre,
             carrera_id,
-            prerequisitos
         } = req.body;
         const [existing] = await db.execute(
             'SELECT id FROM asignaturas WHERE codigo = ? AND id != ?',
@@ -181,14 +174,14 @@ router.put('/asignaturas/:id', async (req, res) => {
         
         await db.execute(`
             UPDATE asignaturas SET
-                codigo = ?, nombre = ?, descripcion = ?, creditos = ?,
+                codigo = ?, nombre = ?, descripcion = ?, 
                 horas_teoricas = ?, horas_practicas = ?, complejidad = ?,
-                cuatrimestre = ?, carrera_id = ?, prerequisitos = ?
+                cuatrimestre = ?, carrera_id = ?, p
             WHERE id = ?
         `, [
-            codigo, nombre, descripcion, creditos,
+            codigo, nombre, descripcion,
             horas_teoricas, horas_practicas, complejidad,
-            cuatrimestre, carrera_id, prerequisitos, id
+            cuatrimestre, carrera_id,  id
         ]);
         
         res.json({

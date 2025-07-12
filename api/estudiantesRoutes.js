@@ -3,9 +3,10 @@ import { db } from '../index.js';
 import { verifyToken } from '../middleware/auth.js';
 
 const router = express.Router();
+
 router.get('/estudiante/perfil', verifyToken, async (req, res) => {
     try {
-        const usuarioId = req.userId;
+        const usuarioId = req.user.id;
         
         const [rows] = await db.execute(`
             SELECT 
@@ -18,11 +19,9 @@ router.get('/estudiante/perfil', verifyToken, async (req, res) => {
                 a.fecha_nacimiento,
                 a.estado_alumno,
                 a.promedio_general,
-                a.creditos_acumulados,
                 u.nombre,
                 u.apellido,
                 u.correo,
-                u.avatar_url,
                 c.nombre AS carrera,
                 c.codigo AS codigo_carrera,
                 c.duracion_cuatrimestres
@@ -42,9 +41,11 @@ router.get('/estudiante/perfil', verifyToken, async (req, res) => {
         res.status(500).json({ error: 'Error interno del servidor' });
     }
 });
+
 router.get('/estudiante/calificaciones', verifyToken, async (req, res) => {
     try {
-        const usuarioId = req.userId;
+        const usuarioId = req.user.id;
+        
         const [alumnoRows] = await db.execute(`
             SELECT id FROM alumnos WHERE usuario_id = ?
         `, [usuarioId]);
@@ -70,7 +71,6 @@ router.get('/estudiante/calificaciones', verifyToken, async (req, res) => {
                 c.fecha_captura,
                 a.nombre AS asignatura,
                 a.codigo AS codigo_asignatura,
-                a.creditos,
                 a.cuatrimestre,
                 CONCAT(u.nombre, ' ', u.apellido) AS profesor
             FROM calificaciones c
@@ -87,9 +87,11 @@ router.get('/estudiante/calificaciones', verifyToken, async (req, res) => {
         res.status(500).json({ error: 'Error interno del servidor' });
     }
 });
+
 router.get('/estudiante/reportes', verifyToken, async (req, res) => {
     try {
-        const usuarioId = req.userId;
+        const usuarioId = req.user.id;
+        
         const [alumnoRows] = await db.execute(`
             SELECT id FROM alumnos WHERE usuario_id = ?
         `, [usuarioId]);
@@ -126,9 +128,10 @@ router.get('/estudiante/reportes', verifyToken, async (req, res) => {
         res.status(500).json({ error: 'Error interno del servidor' });
     }
 });
+
 router.get('/estudiante/horarios', verifyToken, async (req, res) => {
     try {
-        const usuarioId = req.userId;
+        const usuarioId = req.user.id;
         
         const [alumnoRows] = await db.execute(`
             SELECT a.id as alumno_id, ag.grupo_id 
@@ -171,9 +174,11 @@ router.get('/estudiante/horarios', verifyToken, async (req, res) => {
         res.status(500).json({ error: 'Error interno del servidor' });
     }
 });
+
 router.get('/estudiante/solicitudes-ayuda', verifyToken, async (req, res) => {
     try {
-        const usuarioId = req.userId;
+        const usuarioId = req.user.id;
+        
         const [alumnoRows] = await db.execute(`
             SELECT id FROM alumnos WHERE usuario_id = ?
         `, [usuarioId]);
@@ -212,13 +217,16 @@ router.get('/estudiante/solicitudes-ayuda', verifyToken, async (req, res) => {
         res.status(500).json({ error: 'Error interno del servidor' });
     }
 });
+
 router.post('/estudiante/solicitud-ayuda', verifyToken, async (req, res) => {
     try {
-        const usuarioId = req.userId;
+        const usuarioId = req.user.id;
         const { tipo_problema, descripcion_problema, urgencia, contacto_preferido } = req.body;
+
         if (!tipo_problema || !descripcion_problema) {
             return res.status(400).json({ error: 'Tipo de problema y descripción son requeridos' });
         }
+
         const [alumnoRows] = await db.execute(`
             SELECT id FROM alumnos WHERE usuario_id = ?
         `, [usuarioId]);
@@ -248,10 +256,12 @@ router.post('/estudiante/solicitud-ayuda', verifyToken, async (req, res) => {
         res.status(500).json({ error: 'Error interno del servidor' });
     }
 });
+
 router.put('/estudiante/perfil', verifyToken, async (req, res) => {
     try {
-        const usuarioId = req.userId;
+        const usuarioId = req.user.id;
         const { telefono, direccion } = req.body;
+
         await db.execute(`
             UPDATE alumnos 
             SET telefono = ?, direccion = ?

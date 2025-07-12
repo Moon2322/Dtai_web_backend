@@ -417,7 +417,6 @@ async function handleStudentQuery(analysis, mensaje) {
                 g.codigo as grupo,
                 a.cuatrimestre_actual,
                 a.promedio_general,
-                a.creditos_acumulados,
                 COUNT(DISTINCT cal.id) as materias_evaluadas,
                 SUM(CASE WHEN cal.estatus = 'aprobado' THEN 1 ELSE 0 END) as materias_aprobadas,
                 SUM(CASE WHEN cal.estatus = 'reprobado' THEN 1 ELSE 0 END) as materias_reprobadas,
@@ -430,6 +429,7 @@ async function handleStudentQuery(analysis, mensaje) {
             LEFT JOIN calificaciones cal ON a.id = cal.alumno_id AND cal.calificacion_final IS NOT NULL
             WHERE u.activo = TRUE AND a.estado_alumno = 'activo'
         `;
+
         
         let params = [];
         let whereClause = '';
@@ -453,7 +453,7 @@ async function handleStudentQuery(analysis, mensaje) {
         
         baseQuery += whereClause + `
             GROUP BY a.id, u.nombre, u.apellido, a.matricula, c.nombre, g.codigo, 
-                     a.cuatrimestre_actual, a.promedio_general, a.creditos_acumulados
+                     a.cuatrimestre_actual, a.promedio_general
             HAVING materias_evaluadas > 0
         `;
         if (analysis.qualifier === 'best') {
@@ -512,7 +512,7 @@ async function handleStudentQuery(analysis, mensaje) {
             if (estudiante.materias_reprobadas > 0) {
                 respuesta += `   ❌ Materias reprobadas: ${estudiante.materias_reprobadas}\n`;
             }
-            respuesta += `   🎯 Créditos: ${estudiante.creditos_acumulados || 0}\n\n`;
+
         });
         
         const destacado = rows[0];
