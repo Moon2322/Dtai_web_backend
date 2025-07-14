@@ -188,21 +188,27 @@ router.get('/reportes/solicitudes-ayuda', verifyToken, async (req, res) => {
     try {
         const [rows] = await db.execute(`
             SELECT 
+                sa.id,
                 sa.tipo_problema,
+                sa.descripcion_problema,
                 sa.urgencia,
                 sa.estado,
-                COUNT(*) as total_solicitudes,
-                AVG(DATEDIFF(COALESCE(sa.fecha_respuesta, NOW()), sa.fecha_solicitud)) as tiempo_promedio_respuesta
+                sa.fecha_solicitud,
+                CONCAT(u.nombre, ' ', u.apellido) as estudiante,
+                a.matricula,
+                c.nombre as carrera
             FROM solicitudes_ayuda sa
+            INNER JOIN alumnos a ON sa.alumno_id = a.id
+            INNER JOIN usuarios u ON a.usuario_id = u.id
+            INNER JOIN carreras c ON a.carrera_id = c.id
             WHERE sa.fecha_solicitud >= DATE_SUB(NOW(), INTERVAL 1 YEAR)
-            GROUP BY sa.tipo_problema, sa.urgencia, sa.estado
             ORDER BY 
                 CASE sa.urgencia 
                     WHEN 'alta' THEN 1
                     WHEN 'media' THEN 2
                     WHEN 'baja' THEN 3
                 END,
-                total_solicitudes DESC
+                sa.fecha_solicitud DESC
         `);
         
         res.json(rows);
