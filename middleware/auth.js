@@ -38,6 +38,10 @@ export const verifyToken = async (req, res, next) => {
     }
 };
 
+export const publicRoute = (req, res, next) => {
+    next();
+};
+
 export const requireRole = (roles) => {
     return (req, res, next) => {
         if (!req.user || !roles.includes(req.user.rol)) {

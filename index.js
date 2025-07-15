@@ -1,7 +1,9 @@
+
 import dotenv from 'dotenv';
 import express from 'express';
 import mysql from 'mysql2/promise';
 import cors from 'cors';
+import publicRoutes from './api/publicRoutes.js';
 import authRoutes from './api/authRoutes.js';
 import dashboardRoutes from './api/dashboardRoutes.js';
 import registerRoutes from './api/registerRoutes.js';
@@ -58,7 +60,7 @@ try {
     console.error("❌ Error al crear el pool de conexiones:", err);
     process.exit(1);
 }
-
+app.use('/api', publicRoutes);
 app.use('/api', authRoutes);
 app.use('/api', dashboardRoutes);
 app.use('/api', registerRoutes);
