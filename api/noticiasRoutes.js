@@ -1,6 +1,7 @@
 import express from 'express';
 import { db } from '../index.js';
 import { verifyToken, publicRoute } from '../middleware/auth.js';
+import upload, { uploadToFirebase, deleteFromFirebase } from '../middleware/upload.js';
 
 const router = express.Router();
 
@@ -113,45 +114,8 @@ router.get('/categorias-noticias', async (req, res) => {
     }
 });
 
-router.get('/debug/user-info', verifyToken, async (req, res) => {
+router.post('/noticias', verifyToken, upload.single('imagen'), async (req, res) => {
     try {
-        console.log('Token user info:', req.user);
-        
-        const [usuario] = await db.execute(
-            'SELECT * FROM usuarios WHERE correo = ?',
-            [req.user.correo]
-        );
-        
-        const [directivo] = await db.execute(
-            `SELECT d.* FROM directivos d 
-             JOIN usuarios u ON d.usuario_id = u.id 
-             WHERE u.correo = ?`,
-            [req.user.correo]
-        );
-        
-        res.json({
-            success: true,
-            data: {
-                tokenInfo: req.user,
-                usuario: usuario[0] || 'No encontrado',
-                directivo: directivo[0] || 'No encontrado'
-            }
-        });
-        
-    } catch (error) {
-        console.error('Error en debug:', error);
-        res.status(500).json({
-            success: false,
-            message: error.message
-        });
-    }
-});
-
-router.post('/noticias', verifyToken, async (req, res) => {
-    try {
-        console.log('Usuario autenticado:', req.user);
-        console.log('Datos de la noticia:', req.body);
-        
         const {
             titulo,
             contenido,
@@ -167,6 +131,7 @@ router.post('/noticias', verifyToken, async (req, res) => {
                 message: 'Los campos título, contenido y categoría son requeridos'
             });
         }
+
         const [directivo] = await db.execute(
             `SELECT d.id, u.nombre, u.apellido 
              FROM directivos d 
@@ -174,8 +139,6 @@ router.post('/noticias', verifyToken, async (req, res) => {
              WHERE u.correo = ? AND u.activo = TRUE`,
             [req.user.correo]
         );
-        
-        console.log('Directivo encontrado:', directivo);
         
         if (directivo.length === 0) {
             const [usuarioData] = await db.execute(
@@ -206,11 +169,24 @@ router.post('/noticias', verifyToken, async (req, res) => {
                 
                 const autorId = nuevoDirectivo[0].id;
                 
+                let imagen_url = null;
+                let imagen_firebase_path = null;
+                
+                if (req.file) {
+                    try {
+                        const uploadResult = await uploadToFirebase(req.file, 'noticias');
+                        imagen_url = uploadResult.publicUrl;
+                        imagen_firebase_path = uploadResult.fileName;
+                    } catch (uploadError) {
+                        console.error('Error uploading image:', uploadError);
+                    }
+                }
+                
                 const [result] = await db.execute(`
                     INSERT INTO noticias (
                         titulo, contenido, resumen, autor_id, categoria_id,
-                        es_destacada, publicada, fecha_publicacion
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        es_destacada, publicada, fecha_publicacion, imagen_url, imagen_firebase_path
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `, [
                     titulo,
                     contenido,
@@ -219,7 +195,9 @@ router.post('/noticias', verifyToken, async (req, res) => {
                     categoria_id,
                     es_destacada || false,
                     publicada || false,
-                    publicada ? new Date() : null
+                    publicada ? new Date() : null,
+                    imagen_url,
+                    imagen_firebase_path
                 ]);
                 
                 return res.json({
@@ -237,11 +215,24 @@ router.post('/noticias', verifyToken, async (req, res) => {
         
         const autorId = directivo[0].id;
         
+        let imagen_url = null;
+        let imagen_firebase_path = null;
+        
+        if (req.file) {
+            try {
+                const uploadResult = await uploadToFirebase(req.file, 'noticias');
+                imagen_url = uploadResult.publicUrl;
+                imagen_firebase_path = uploadResult.fileName;
+            } catch (uploadError) {
+                console.error('Error uploading image:', uploadError);
+            }
+        }
+        
         const [result] = await db.execute(`
             INSERT INTO noticias (
                 titulo, contenido, resumen, autor_id, categoria_id,
-                es_destacada, publicada, fecha_publicacion
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                es_destacada, publicada, fecha_publicacion, imagen_url, imagen_firebase_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
             titulo,
             contenido,
@@ -250,7 +241,9 @@ router.post('/noticias', verifyToken, async (req, res) => {
             categoria_id,
             es_destacada || false,
             publicada || false,
-            publicada ? new Date() : null
+            publicada ? new Date() : null,
+            imagen_url,
+            imagen_firebase_path
         ]);
         
         res.json({
@@ -269,7 +262,7 @@ router.post('/noticias', verifyToken, async (req, res) => {
     }
 });
 
-router.put('/noticias/:id', verifyToken, async (req, res) => {
+router.put('/noticias/:id', verifyToken, upload.single('imagen'), async (req, res) => {
     try {
         const { id } = req.params;
         const {
@@ -280,6 +273,7 @@ router.put('/noticias/:id', verifyToken, async (req, res) => {
             es_destacada,
             publicada
         } = req.body;
+
         const [noticia] = await db.execute(
             'SELECT * FROM noticias WHERE id = ?',
             [id]
@@ -291,21 +285,41 @@ router.put('/noticias/:id', verifyToken, async (req, res) => {
                 message: 'Noticia no encontrada'
             });
         }
+
         let fechaPublicacion = noticia[0].fecha_publicacion;
         if (publicada && !noticia[0].publicada) {
             fechaPublicacion = new Date();
         } else if (!publicada) {
             fechaPublicacion = null;
         }
+
+        let imagen_url = noticia[0].imagen_url;
+        let imagen_firebase_path = noticia[0].imagen_firebase_path;
+        
+        if (req.file) {
+            try {
+                if (imagen_firebase_path) {
+                    await deleteFromFirebase(imagen_firebase_path);
+                }
+                
+                const uploadResult = await uploadToFirebase(req.file, 'noticias');
+                imagen_url = uploadResult.publicUrl;
+                imagen_firebase_path = uploadResult.fileName;
+            } catch (uploadError) {
+                console.error('Error uploading image:', uploadError);
+            }
+        }
         
         await db.execute(`
             UPDATE noticias SET
                 titulo = ?, contenido = ?, resumen = ?, categoria_id = ?,
-                es_destacada = ?, publicada = ?, fecha_publicacion = ?
+                es_destacada = ?, publicada = ?, fecha_publicacion = ?,
+                imagen_url = ?, imagen_firebase_path = ?
             WHERE id = ?
         `, [
             titulo, contenido, resumen, categoria_id,
-            es_destacada, publicada, fechaPublicacion, id
+            es_destacada, publicada, fechaPublicacion,
+            imagen_url, imagen_firebase_path, id
         ]);
         
         res.json({
