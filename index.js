@@ -17,6 +17,10 @@ import reportesRoutes from './api/reportesRoutes.js';
 import chatbotRoutes from './api/chatbotRoutes.js';
 import estudiantesRoutes from './api/estudiantesRoutes.js';
 import estudianteRoutes from './api/estudianteRoutes.js';
+import profesorRoutes from './api/profesorRoutes.js';
+import profesorEstudiantesRoutes from './api/profesorEstudiantesRoutes.js';
+import carrerasRoutes from './api/carrerasRoutes.js';
+import foroRoutes from './api/foroRoutes.js';
 
 dotenv.config();
 const app = express();
@@ -74,6 +78,12 @@ app.use('/api', reportesRoutes);
 app.use('/api', chatbotRoutes);
 app.use('/api', estudiantesRoutes);
 app.use('/api', estudianteRoutes);
+app.use('/api/profesor', profesorRoutes);
+
+app.use('/api/profesor/estudiantes', profesorEstudiantesRoutes);
+app.use('/api/carreras', carrerasRoutes);
+app.use('/api/foro', foroRoutes);
+
 
 
 const PORT = process.env.PORT || 5000;
