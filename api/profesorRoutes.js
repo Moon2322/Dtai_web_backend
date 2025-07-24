@@ -359,26 +359,38 @@ router.delete('/asignaturas/:id', async (req, res) => {
 });
 
 // Obtener solicitudes de ayuda de los estudiantes del profesor
+// Obtener solicitudes de ayuda de los estudiantes del profesor
 router.get('/solicitudes-ayuda', async (req, res) => {
     try {
-        const [solicitudes] = await db.execute(`
-            SELECT 
-                sa.*,
-                u.nombre as alumno_nombre,
-                u.apellido as alumno_apellido,
-                al.matricula,
-                u.correo as email
-            FROM solicitudes_ayuda sa
-            JOIN alumnos al ON sa.alumno_id = al.id
-            JOIN usuarios u ON al.usuario_id = u.id
-            JOIN alumnos_grupos ag ON al.id = ag.alumno_id
-            JOIN profesor_asignatura_grupo pag ON ag.grupo_id = pag.grupo_id
-            WHERE pag.profesor_id = ? 
-            AND pag.activo = 1
-            AND ag.activo = 1
-            GROUP BY sa.id
-            ORDER BY sa.fecha_solicitud DESC
-        `, [req.profesor_id]);
+const [solicitudes] = await db.execute(`
+    SELECT 
+        sa.id,
+        sa.tipo_problema as categoria,
+        sa.descripcion_problema as asunto,
+        sa.urgencia,
+        sa.estado,
+        sa.contacto_preferido,
+sa.fecha_solicitud as fecha_creacion,
+        al.matricula,
+        u.nombre as alumno_nombre,
+        u.apellido as alumno_apellido,
+        u.correo as email,
+        CONCAT(u.nombre, ' ', u.apellido) as contacto,
+        CASE 
+            WHEN al.telefono IS NOT NULL THEN al.telefono
+            ELSE 'Sin teléfono'
+        END as telefono
+    FROM solicitudes_ayuda sa
+    JOIN alumnos al ON sa.alumno_id = al.id
+    JOIN usuarios u ON al.usuario_id = u.id
+    WHERE al.tutor_nombre = (
+        SELECT CONCAT(up.nombre, ' ', up.apellido)
+        FROM profesores p
+        JOIN usuarios up ON p.usuario_id = up.id
+        WHERE p.id = ?
+    )
+    ORDER BY sa.fecha_solicitud DESC
+`, [req.profesor_id]);
 
         res.json({
             success: true,
@@ -395,19 +407,23 @@ router.get('/solicitudes-ayuda', async (req, res) => {
 });
 
 // Cambiar estado de solicitud de ayuda
+// Cambiar estado de solicitud de ayuda
 router.put('/solicitudes-ayuda/:id/estado', async (req, res) => {
     try {
         const { id } = req.params;
         const { estado } = req.body;
 
-        // Verificar que la solicitud pertenece a un estudiante del profesor
+        // Simplificar la verificación - buscar por tutor_nombre
         const [solicitud] = await db.execute(`
             SELECT sa.id 
             FROM solicitudes_ayuda sa
             JOIN alumnos al ON sa.alumno_id = al.id
-            JOIN alumnos_grupos ag ON al.id = ag.alumno_id
-            JOIN profesor_asignatura_grupo pag ON ag.grupo_id = pag.grupo_id
-            WHERE sa.id = ? AND pag.profesor_id = ?
+            WHERE sa.id = ? AND al.tutor_nombre = (
+                SELECT CONCAT(up.nombre, ' ', up.apellido)
+                FROM profesores p
+                JOIN usuarios up ON p.usuario_id = up.id
+                WHERE p.id = ?
+            )
         `, [id, req.profesor_id]);
 
         if (solicitud.length === 0) {
@@ -434,10 +450,130 @@ router.put('/solicitudes-ayuda/:id/estado', async (req, res) => {
             message: 'Error interno del servidor'
         });
     }
-    
 });
 
+// Obtener mensajes del chat de una solicitud de ayuda
+router.get('/solicitudes-ayuda/:id/chat', async (req, res) => {
+    try {
+        const { id } = req.params;
 
+        // Verificar que la solicitud pertenece a un estudiante del profesor
+        const [solicitud] = await db.execute(`
+            SELECT sa.id 
+            FROM solicitudes_ayuda sa
+            JOIN alumnos al ON sa.alumno_id = al.id
+            WHERE sa.id = ? AND al.tutor_nombre = (
+                SELECT CONCAT(up.nombre, ' ', up.apellido)
+                FROM profesores p
+                JOIN usuarios up ON p.usuario_id = up.id
+                WHERE p.id = ?
+            )
+        `, [id, req.profesor_id]);
+
+        if (solicitud.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Solicitud no encontrada'
+            });
+        }
+
+        // Obtener mensajes del chat
+        const [mensajes] = await db.execute(`
+            SELECT 
+                c.id,
+                c.mensaje,
+                c.tipo_usuario,
+                c.fecha_mensaje,
+                CASE 
+                    WHEN c.tipo_usuario = 'alumno' THEN CONCAT(ua.nombre, ' ', ua.apellido)
+                    WHEN c.tipo_usuario = 'profesor' THEN CONCAT(up.nombre, ' ', up.apellido)
+                    WHEN c.tipo_usuario = 'directivo' THEN CONCAT(ud.nombre, ' ', ud.apellido)
+                    ELSE 'Sistema'
+                END as nombre_usuario
+            FROM chat_ayuda c
+            LEFT JOIN usuarios ua ON c.usuario_id = ua.id AND c.tipo_usuario = 'alumno'
+            LEFT JOIN usuarios up ON c.usuario_id = up.id AND c.tipo_usuario = 'profesor'
+            LEFT JOIN usuarios ud ON c.usuario_id = ud.id AND c.tipo_usuario = 'directivo'
+            WHERE c.solicitud_id = ?
+            ORDER BY c.fecha_mensaje ASC
+        `, [id]);
+
+        res.json({
+            success: true,
+            data: mensajes
+        });
+
+    } catch (error) {
+        console.error('Error al obtener mensajes del chat:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+
+// Enviar mensaje en el chat de una solicitud de ayuda
+router.post('/solicitudes-ayuda/:id/chat', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { mensaje } = req.body;
+
+        if (!mensaje || !mensaje.trim()) {
+            return res.status(400).json({
+                success: false,
+                message: 'El mensaje es requerido'
+            });
+        }
+
+        // Verificar que la solicitud pertenece a un estudiante del profesor
+        const [solicitud] = await db.execute(`
+            SELECT sa.id 
+            FROM solicitudes_ayuda sa
+            JOIN alumnos al ON sa.alumno_id = al.id
+            WHERE sa.id = ? AND al.tutor_nombre = (
+                SELECT CONCAT(up.nombre, ' ', up.apellido)
+                FROM profesores p
+                JOIN usuarios up ON p.usuario_id = up.id
+                WHERE p.id = ?
+            )
+        `, [id, req.profesor_id]);
+
+        if (solicitud.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Solicitud no encontrada'
+            });
+        }
+
+        // Obtener el usuario_id del profesor
+        const [profesor] = await db.execute(
+            'SELECT usuario_id FROM profesores WHERE id = ?',
+            [req.profesor_id]
+        );
+
+        // Insertar mensaje en el chat
+        const [resultado] = await db.execute(`
+            INSERT INTO chat_ayuda (solicitud_id, usuario_id, mensaje, tipo_usuario)
+            VALUES (?, ?, ?, 'profesor')
+        `, [id, profesor[0].usuario_id, mensaje.trim()]);
+
+        res.status(201).json({
+            success: true,
+            message: 'Mensaje enviado exitosamente',
+            data: { id: resultado.insertId }
+        });
+
+    } catch (error) {
+        console.error('Error al enviar mensaje:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
 
 export default router;
+
+
+
 

@@ -38,6 +38,43 @@ export const verifyToken = async (req, res, next) => {
     }
 };
 
+export const verifyTokenGeneral = async (req, res, next) => {
+    try {
+        const token = req.header('Authorization')?.replace('Bearer ', '');
+        
+        if (!token) {
+            return res.status(401).json({
+                success: false,
+                message: 'Token de acceso requerido'
+            });
+        }
+
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const [sesiones] = await db.execute(
+            'SELECT * FROM sesiones_usuario WHERE token_jwt = ? AND activa = TRUE AND fecha_expiracion > NOW()',
+            [token]
+        );
+
+        if (sesiones.length === 0) {
+            return res.status(401).json({
+                success: false,
+                message: 'Sesión expirada o inválida'
+            });
+        }
+
+        req.user = decoded;
+        req.token = token;
+        next();
+
+    } catch (error) {
+        console.error('Error en verificación de token:', error);
+        return res.status(401).json({
+            success: false,
+            message: 'Token inválido'
+        });
+    }
+};
+
 export const publicRoute = (req, res, next) => {
     next();
 };
@@ -52,6 +89,36 @@ export const requireRole = (roles) => {
         }
         next();
     };
+};
+
+// 👇 NUEVO MIDDLEWARE - Validar que el usuario sea profesor
+export const validarProfesor = async (req, res, next) => {
+    try {
+        // Primero verificar el token
+        await verifyToken(req, res, async () => {
+            // Después verificar que sea profesor
+            const [profesor] = await db.execute(
+                'SELECT id FROM profesores WHERE usuario_id = (SELECT id FROM usuarios WHERE correo = ?)',
+                [req.user.correo]
+            );
+            
+            if (profesor.length === 0) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Acceso denegado. No eres un profesor registrado.'
+                });
+            }
+            
+            req.profesor_id = profesor[0].id;
+            next();
+        });
+    } catch (error) {
+        console.error('Error en validarProfesor:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
 };
 
 export const verifyTokenEstudiante = async (req, res, next) => {
@@ -91,7 +158,8 @@ export const verifyTokenEstudiante = async (req, res, next) => {
                 a.cuatrimestre_actual
              FROM usuarios u
              INNER JOIN alumnos a ON u.id = a.usuario_id
-             WHERE u.id = ? AND u.rol = 'alumno' AND u.activo = TRUE AND a.estado_alumno = 'activo'`,
+             WHERE u.id = ?
+             AND u.rol = 'alumno' AND u.activo = TRUE AND a.estado_alumno = 'activo'`,
             [userId]
         );
 

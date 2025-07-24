@@ -21,6 +21,8 @@ import profesorRoutes from './api/profesorRoutes.js';
 import profesorEstudiantesRoutes from './api/profesorEstudiantesRoutes.js';
 import carrerasRoutes from './api/carrerasRoutes.js';
 import foroRoutes from './api/foroRoutes.js';
+import profesorForoRoutes from './api/profesorForoRoutes.js';
+
 
 dotenv.config();
 const app = express();
@@ -83,6 +85,8 @@ app.use('/api/profesor', profesorRoutes);
 app.use('/api/profesor/estudiantes', profesorEstudiantesRoutes);
 app.use('/api/carreras', carrerasRoutes);
 app.use('/api/foro', foroRoutes);
+app.use('/api/profesor/foro', profesorForoRoutes);
+
 
 
 

@@ -1,6 +1,6 @@
 import express from 'express';
 import { db } from '../index.js';
-import { verifyTokenEstudiante } from '../middleware/auth.js';
+import { verifyTokenEstudiante, verifyToken } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -522,14 +522,14 @@ router.get('/foro/posts/:postId', verifyTokenEstudiante, async (req, res) => {
     }
 });
 
-router.get('/foro/posts/:postId/comentarios', verifyTokenEstudiante, async (req, res) => {
-    try {
+router.get('/foro/posts/:postId/comentarios', verifyToken, async (req, res) => {
+        try {
         const { postId } = req.params;
 
         const [comentarios] = await db.execute(`
             SELECT 
                 c.id,
-                c.comentario,
+c.comentario as contenido,
                 c.likes,
                 c.fecha_creacion,
                 CONCAT(u.nombre, ' ', u.apellido) as autor_nombre
