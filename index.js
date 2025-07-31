@@ -22,6 +22,7 @@ import profesorEstudiantesRoutes from './api/profesorEstudiantesRoutes.js';
 import carrerasRoutes from './api/carrerasRoutes.js';
 import foroRoutes from './api/foroRoutes.js';
 import profesorForoRoutes from './api/profesorForoRoutes.js';
+import tutoresRoutes from './api/tutoresRoutes.js';
 
 
 dotenv.config();
@@ -81,6 +82,7 @@ app.use('/api', chatbotRoutes);
 app.use('/api', estudiantesRoutes);
 app.use('/api', estudianteRoutes);
 app.use('/api/profesor', profesorRoutes);
+app.use('/api', tutoresRoutes);
 
 app.use('/api/profesor/estudiantes', profesorEstudiantesRoutes);
 app.use('/api/carreras', carrerasRoutes);
