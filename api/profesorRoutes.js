@@ -1282,6 +1282,438 @@ router.delete('/asignacion/:id', async (req, res) => {
     }
 });
 
+// ✅ RUTAS PARA EL SISTEMA INTELIGENTE - Agregar a profesorRoutes.js
+
+// Obtener estudiantes de un grupo específico para una asignatura
+router.get('/estudiantes-grupo/:grupoId/asignatura/:asignaturaId', async (req, res) => {
+    try {
+        const { grupoId, asignaturaId } = req.params;
+
+        // Verificar que el profesor tenga acceso a esta asignatura-grupo
+        const [accesoVerificacion] = await db.execute(`
+            SELECT id FROM profesor_asignatura_grupo 
+            WHERE profesor_id = ? AND asignatura_id = ? AND grupo_id = ? AND activo = 1
+        `, [req.profesor_id, asignaturaId, grupoId]);
+
+        if (accesoVerificacion.length === 0) {
+            return res.status(403).json({
+                success: false,
+                message: 'No tienes acceso a esta asignatura y grupo'
+            });
+        }
+
+        // Obtener estudiantes del grupo con información de calificaciones existentes
+        const [estudiantes] = await db.execute(`
+            SELECT 
+                a.id,
+                CONCAT(u.nombre, ' ', u.apellido) as nombre_completo,
+                a.matricula,
+                u.correo,
+                a.cuatrimestre_actual,
+                a.estado_alumno,
+                CASE 
+                    WHEN c.id IS NOT NULL THEN 1 
+                    ELSE 0 
+                END as tiene_calificacion,
+                c.calificacion_final,
+                c.estatus as estatus_calificacion
+            FROM alumnos_grupos ag
+            JOIN alumnos a ON ag.alumno_id = a.id
+            JOIN usuarios u ON a.usuario_id = u.id
+            LEFT JOIN calificaciones c ON (
+                c.alumno_id = a.id 
+                AND c.asignatura_id = ? 
+                AND c.grupo_id = ?
+                AND c.profesor_id = ?
+            )
+            WHERE ag.grupo_id = ? 
+            AND ag.activo = 1 
+            AND u.activo = 1
+            ORDER BY u.apellido, u.nombre
+        `, [asignaturaId, grupoId, req.profesor_id, grupoId]);
+
+        res.json({
+            success: true,
+            data: estudiantes
+        });
+
+    } catch (error) {
+        console.error('Error al obtener estudiantes del grupo:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+
+// Obtener calificaciones del profesor (modificada para usar profesor_asignatura_grupo)
+router.get('/calificaciones', async (req, res) => {
+    try {
+        const [calificaciones] = await db.execute(`
+            SELECT 
+                c.id,
+                c.parcial_1,
+                c.parcial_2,
+                c.parcial_3,
+                c.calificacion_ordinario,
+                c.calificacion_extraordinario,
+                c.calificacion_final,
+                c.estatus,
+                c.observaciones,
+                c.fecha_captura,
+                c.fecha_actualizacion,
+                CONCAT(u.nombre, ' ', u.apellido) as estudiante_nombre,
+                a.matricula as estudiante_matricula,
+                asig.nombre as asignatura_nombre,
+                asig.codigo as asignatura_codigo,
+                g.codigo as grupo_codigo,
+                g.cuatrimestre,
+                car.nombre as carrera_nombre,
+                pag.ciclo_escolar,
+                pag.id as asignacion_id
+            FROM calificaciones c
+            JOIN alumnos a ON c.alumno_id = a.id
+            JOIN usuarios u ON a.usuario_id = u.id
+            JOIN asignaturas asig ON c.asignatura_id = asig.id
+            JOIN grupos g ON c.grupo_id = g.id
+            JOIN carreras car ON g.carrera_id = car.id
+            JOIN profesor_asignatura_grupo pag ON (
+                pag.profesor_id = c.profesor_id 
+                AND pag.asignatura_id = c.asignatura_id 
+                AND pag.grupo_id = c.grupo_id
+                AND pag.activo = 1
+            )
+            WHERE c.profesor_id = ?
+            ORDER BY c.fecha_actualizacion DESC
+        `, [req.profesor_id]);
+
+        res.json({
+            success: true,
+            data: calificaciones
+        });
+
+    } catch (error) {
+        console.error('Error al obtener calificaciones:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+
+// Crear calificación (modificada para usar profesor_asignatura_grupo)
+router.post('/calificaciones', async (req, res) => {
+    try {
+        const {
+            alumno_id,
+            asignatura_id,
+            grupo_id,
+            ciclo_escolar,
+            parcial_1,
+            parcial_2,
+            parcial_3,
+            calificacion_ordinario,
+            calificacion_extraordinario,
+            calificacion_final,
+            estatus,
+            observaciones
+        } = req.body;
+
+        // Validaciones básicas
+        if (!alumno_id || !asignatura_id || !grupo_id || !calificacion_final) {
+            return res.status(400).json({
+                success: false,
+                message: 'Faltan datos obligatorios (alumno, asignatura, grupo, calificación final)'
+            });
+        }
+
+        // Verificar que el profesor tenga acceso a esta asignatura-grupo
+        const [accesoVerificacion] = await db.execute(`
+            SELECT id, ciclo_escolar FROM profesor_asignatura_grupo 
+            WHERE profesor_id = ? AND asignatura_id = ? AND grupo_id = ? AND activo = 1
+        `, [req.profesor_id, asignatura_id, grupo_id]);
+
+        if (accesoVerificacion.length === 0) {
+            return res.status(403).json({
+                success: false,
+                message: 'No tienes acceso a esta asignatura y grupo'
+            });
+        }
+
+        const cicloEscolarReal = accesoVerificacion[0].ciclo_escolar;
+
+        // Verificar que el alumno esté inscrito en el grupo
+        const [alumnoEnGrupo] = await db.execute(`
+            SELECT id FROM alumnos_grupos 
+            WHERE alumno_id = ? AND grupo_id = ? AND activo = 1
+        `, [alumno_id, grupo_id]);
+
+        if (alumnoEnGrupo.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'El alumno no está inscrito en este grupo'
+            });
+        }
+
+        // Verificar si ya existe una calificación
+        const [calificacionExistente] = await db.execute(`
+            SELECT id FROM calificaciones 
+            WHERE alumno_id = ? AND asignatura_id = ? AND grupo_id = ? AND profesor_id = ?
+        `, [alumno_id, asignatura_id, grupo_id, req.profesor_id]);
+
+        if (calificacionExistente.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Ya existe una calificación para este alumno en esta materia'
+            });
+        }
+
+        // Crear la calificación
+        const [resultado] = await db.execute(`
+            INSERT INTO calificaciones (
+                alumno_id,
+                asignatura_id,
+                grupo_id,
+                profesor_id,
+                ciclo_escolar,
+                parcial_1,
+                parcial_2,
+                parcial_3,
+                calificacion_ordinario,
+                calificacion_extraordinario,
+                calificacion_final,
+                estatus,
+                observaciones,
+                fecha_captura,
+                fecha_actualizacion
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        `, [
+            alumno_id,
+            asignatura_id,
+            grupo_id,
+            req.profesor_id,
+            cicloEscolarReal,
+            parcial_1 || null,
+            parcial_2 || null,
+            parcial_3 || null,
+            calificacion_ordinario || null,
+            calificacion_extraordinario || null,
+            calificacion_final,
+            estatus || 'cursando',
+            observaciones || null
+        ]);
+
+        res.json({
+            success: true,
+            message: 'Calificación guardada correctamente',
+            data: { id: resultado.insertId }
+        });
+
+    } catch (error) {
+        console.error('Error al guardar calificación:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+
+// Actualizar calificación
+router.put('/calificaciones/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const {
+            parcial_1,
+            parcial_2,
+            parcial_3,
+            calificacion_ordinario,
+            calificacion_extraordinario,
+            calificacion_final,
+            estatus,
+            observaciones
+        } = req.body;
+
+        // Verificar que la calificación existe y pertenece al profesor
+        const [calificacionExistente] = await db.execute(`
+            SELECT 
+                c.id,
+                c.alumno_id,
+                c.asignatura_id,
+                c.grupo_id
+            FROM calificaciones c
+            WHERE c.id = ? AND c.profesor_id = ?
+        `, [id, req.profesor_id]);
+
+        if (calificacionExistente.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Calificación no encontrada o no tienes permisos para editarla'
+            });
+        }
+
+        // Verificar que el profesor aún tenga acceso a esta asignatura-grupo
+        const [accesoActual] = await db.execute(`
+            SELECT id FROM profesor_asignatura_grupo 
+            WHERE profesor_id = ? 
+            AND asignatura_id = ? 
+            AND grupo_id = ? 
+            AND activo = 1
+        `, [
+            req.profesor_id, 
+            calificacionExistente[0].asignatura_id, 
+            calificacionExistente[0].grupo_id
+        ]);
+
+        if (accesoActual.length === 0) {
+            return res.status(403).json({
+                success: false,
+                message: 'Ya no tienes acceso a esta asignatura y grupo'
+            });
+        }
+
+        // Actualizar la calificación
+        await db.execute(`
+            UPDATE calificaciones SET
+                parcial_1 = ?,
+                parcial_2 = ?,
+                parcial_3 = ?,
+                calificacion_ordinario = ?,
+                calificacion_extraordinario = ?,
+                calificacion_final = ?,
+                estatus = ?,
+                observaciones = ?,
+                fecha_actualizacion = NOW()
+            WHERE id = ? AND profesor_id = ?
+        `, [
+            parcial_1 || null,
+            parcial_2 || null,
+            parcial_3 || null,
+            calificacion_ordinario || null,
+            calificacion_extraordinario || null,
+            calificacion_final,
+            estatus || 'cursando',
+            observaciones || null,
+            id,
+            req.profesor_id
+        ]);
+
+        res.json({
+            success: true,
+            message: 'Calificación actualizada correctamente'
+        });
+
+    } catch (error) {
+        console.error('Error al actualizar calificación:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+
+// Eliminar calificación
+router.delete('/calificaciones/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // Verificar que la calificación existe y pertenece al profesor
+        const [calificacionExistente] = await db.execute(`
+            SELECT id FROM calificaciones 
+            WHERE id = ? AND profesor_id = ?
+        `, [id, req.profesor_id]);
+
+        if (calificacionExistente.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Calificación no encontrada o no tienes permisos para eliminarla'
+            });
+        }
+
+        // Eliminar la calificación
+        await db.execute(`
+            DELETE FROM calificaciones 
+            WHERE id = ? AND profesor_id = ?
+        `, [id, req.profesor_id]);
+
+        res.json({
+            success: true,
+            message: 'Calificación eliminada correctamente'
+        });
+
+    } catch (error) {
+        console.error('Error al eliminar calificación:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+
+// Obtener estadísticas de calificaciones del profesor
+router.get('/calificaciones/estadisticas', async (req, res) => {
+    try {
+        // Total de calificaciones registradas
+        const [totalCalificaciones] = await db.execute(`
+            SELECT COUNT(*) as total
+            FROM calificaciones c
+            JOIN profesor_asignatura_grupo pag ON (
+                pag.profesor_id = c.profesor_id 
+                AND pag.asignatura_id = c.asignatura_id 
+                AND pag.grupo_id = c.grupo_id
+                AND pag.activo = 1
+            )
+            WHERE c.profesor_id = ?
+        `, [req.profesor_id]);
+
+        // Promedio general
+        const [promedioGeneral] = await db.execute(`
+            SELECT AVG(c.calificacion_final) as promedio
+            FROM calificaciones c
+            JOIN profesor_asignatura_grupo pag ON (
+                pag.profesor_id = c.profesor_id 
+                AND pag.asignatura_id = c.asignatura_id 
+                AND pag.grupo_id = c.grupo_id
+                AND pag.activo = 1
+            )
+            WHERE c.profesor_id = ? 
+            AND c.calificacion_final IS NOT NULL
+        `, [req.profesor_id]);
+
+        // Estudiantes aprobados y reprobados
+        const [aprobacionesReprobaciones] = await db.execute(`
+            SELECT 
+                SUM(CASE WHEN c.calificacion_final >= 6 THEN 1 ELSE 0 END) as aprobados,
+                SUM(CASE WHEN c.calificacion_final < 6 THEN 1 ELSE 0 END) as reprobados
+            FROM calificaciones c
+            JOIN profesor_asignatura_grupo pag ON (
+                pag.profesor_id = c.profesor_id 
+                AND pag.asignatura_id = c.asignatura_id 
+                AND pag.grupo_id = c.grupo_id
+                AND pag.activo = 1
+            )
+            WHERE c.profesor_id = ? 
+            AND c.calificacion_final IS NOT NULL
+        `, [req.profesor_id]);
+
+        res.json({
+            success: true,
+            data: {
+                total_calificaciones: totalCalificaciones[0].total,
+                promedio_general: parseFloat(promedioGeneral[0].promedio || 0).toFixed(2),
+                aprobados: aprobacionesReprobaciones[0].aprobados || 0,
+                reprobados: aprobacionesReprobaciones[0].reprobados || 0
+            }
+        });
+
+    } catch (error) {
+        console.error('Error al obtener estadísticas de calificaciones:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+
 export default router;
 
 
