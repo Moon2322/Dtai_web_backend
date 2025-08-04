@@ -575,7 +575,7 @@ router.get('/grupos', async (req, res) => {
 // En api/profesorRoutes.js - Agregar estas rutas antes del export default router
 
 // Obtener calificaciones del profesor
-router.get('/calificaciones', async (req, res) => {
+/* router.get('/calificaciones', async (req, res) => {
     try {
         const [calificaciones] = await db.execute(`
             SELECT 
@@ -618,7 +618,7 @@ router.get('/calificaciones', async (req, res) => {
             message: 'Error interno del servidor'
         });
     }
-});
+}); */
 
 // Obtener estudiantes de un grupo para asignar calificaciones
 router.get('/calificaciones/estudiantes/:grupoId/:asignaturaId', async (req, res) => {
@@ -1347,7 +1347,7 @@ router.get('/estudiantes-grupo/:grupoId/asignatura/:asignaturaId', async (req, r
 });
 
 // Obtener calificaciones del profesor (modificada para usar profesor_asignatura_grupo)
-router.get('/calificaciones', async (req, res) => {
+/* router.get('/calificaciones', async (req, res) => {
     try {
         const [calificaciones] = await db.execute(`
             SELECT 
@@ -1399,7 +1399,7 @@ router.get('/calificaciones', async (req, res) => {
             message: 'Error interno del servidor'
         });
     }
-});
+}); */
 
 // Crear calificación (modificada para usar profesor_asignatura_grupo)
 router.post('/calificaciones', async (req, res) => {
@@ -1804,18 +1804,20 @@ router.get('/calificaciones', async (req, res) => {
                  FROM evaluaciones_detalle ed 
                  WHERE ed.calificacion_id = c.id 
                  AND ed.es_calificacion_final = TRUE) as parciales_completados,
-                -- Obtener detalle de evaluaciones como JSON
+                -- Obtener detalle de evaluaciones como JSON ORDENADO
                 (SELECT JSON_ARRAYAGG(
                     JSON_OBJECT(
                         'numero_parcial', ed.numero_parcial,
                         'oportunidad', ed.oportunidad,
                         'calificacion', ed.calificacion,
-                        'fecha_evaluacion', ed.fecha_evaluacion
+                        'fecha_evaluacion', ed.fecha_evaluacion,
+                        'aprobado', ed.aprobado
                     )
                  )
                  FROM evaluaciones_detalle ed 
                  WHERE ed.calificacion_id = c.id 
-                 AND ed.es_calificacion_final = TRUE) as detalle_parciales
+                 AND ed.es_calificacion_final = TRUE
+                 ORDER BY ed.numero_parcial ASC) as detalle_parciales
             FROM calificaciones c
             JOIN alumnos a ON c.alumno_id = a.id
             JOIN usuarios u ON a.usuario_id = u.id
@@ -1832,13 +1834,23 @@ router.get('/calificaciones', async (req, res) => {
             ORDER BY c.fecha_actualizacion DESC
         `, [req.profesor_id]);
 
+        // 🔍 DEBUG: Log de lo que se envía
+        console.log(`📊 Enviando ${calificaciones.length} calificaciones al frontend`);
+        calificaciones.forEach((cal, index) => {
+            console.log(`🎓 Cal ${index + 1}:`, {
+                id: cal.id,
+                estudiante: cal.estudiante_nombre,
+                parciales: cal.detalle_parciales
+            });
+        });
+
         res.json({
             success: true,
             data: calificaciones
         });
 
     } catch (error) {
-        console.error('Error al obtener calificaciones:', error);
+        console.error('❌ Error al obtener calificaciones:', error);
         res.status(500).json({
             success: false,
             message: 'Error interno del servidor'
@@ -2223,6 +2235,171 @@ router.post('/calificaciones/inicializar', async (req, res) => {
         });
     }
 });
+
+// Obtener siguiente oportunidad disponible para un parcial específico
+router.get('/calificaciones/:id/siguiente-oportunidad/:parcial', async (req, res) => {
+    try {
+        const { id, parcial } = req.params;
+        const calificacionId = id;
+        const numeroParcial = parseInt(parcial);
+
+        // Validaciones básicas
+        if (!numeroParcial || numeroParcial < 1 || numeroParcial > 3) {
+            return res.status(400).json({
+                success: false,
+                message: 'Número de parcial inválido (debe ser 1, 2 o 3)'
+            });
+        }
+
+        // Verificar que la calificación pertenece al profesor
+        const [calificacionExiste] = await db.execute(`
+            SELECT c.*, al.ultima_oportunidad_usada
+            FROM calificaciones c
+            JOIN alumnos al ON c.alumno_id = al.id
+            WHERE c.id = ? AND c.profesor_id = ?
+        `, [calificacionId, req.profesor_id]);
+
+        if (calificacionExiste.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Calificación no encontrada o sin permisos'
+            });
+        }
+
+        const ultimaOportunidadUsada = calificacionExiste[0].ultima_oportunidad_usada;
+
+        // Obtener todas las evaluaciones de este parcial ordenadas por fecha
+        const [evaluacionesExistentes] = await db.execute(`
+            SELECT 
+                oportunidad, 
+                calificacion, 
+                aprobado, 
+                fecha_evaluacion,
+                es_calificacion_final
+            FROM evaluaciones_detalle
+            WHERE calificacion_id = ? AND numero_parcial = ?
+            ORDER BY 
+                FIELD(oportunidad, 'ordinario', 'remedial', 'extraordinario', 'ultima_oportunidad'),
+                fecha_evaluacion ASC
+        `, [calificacionId, numeroParcial]);
+
+        console.log(`🔍 Evaluaciones existentes para parcial ${numeroParcial}:`, evaluacionesExistentes);
+
+        // Determinar siguiente oportunidad
+        const resultado = determinarSiguienteOportunidad(evaluacionesExistentes, ultimaOportunidadUsada);
+
+        res.json({
+            success: true,
+            data: {
+                siguiente_oportunidad: resultado.siguiente_oportunidad,
+                puede_evaluar: resultado.puede_evaluar,
+                motivo: resultado.motivo,
+                historial_evaluaciones: evaluacionesExistentes,
+                estado_parcial: resultado.estado_parcial
+            }
+        });
+
+    } catch (error) {
+        console.error('Error al obtener siguiente oportunidad:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+
+// Función auxiliar para determinar la siguiente oportunidad
+function determinarSiguienteOportunidad(evaluacionesExistentes, ultimaOportunidadUsada) {
+    // Si no hay evaluaciones → debe empezar con ordinario
+    if (evaluacionesExistentes.length === 0) {
+        return {
+            siguiente_oportunidad: 'ordinario',
+            puede_evaluar: true,
+            motivo: 'Debe empezar con la evaluación ordinaria',
+            estado_parcial: 'pendiente'
+        };
+    }
+
+    // Obtener la última evaluación final (es_calificacion_final = TRUE)
+    const ultimaEvaluacionFinal = evaluacionesExistentes
+        .filter(e => e.es_calificacion_final)
+        .pop(); // Obtener la última
+
+    if (!ultimaEvaluacionFinal) {
+        // Si no hay evaluación final, algo está mal, empezar con ordinario
+        return {
+            siguiente_oportunidad: 'ordinario',
+            puede_evaluar: true,
+            motivo: 'No hay evaluación final válida, empezar con ordinario',
+            estado_parcial: 'pendiente'
+        };
+    }
+
+    console.log(`📊 Última evaluación final:`, ultimaEvaluacionFinal);
+
+    // Si la última evaluación fue aprobatoria → Ya no puede evaluar más
+    if (ultimaEvaluacionFinal.aprobado) {
+        return {
+            siguiente_oportunidad: null,
+            puede_evaluar: false,
+            motivo: `Ya aprobó en ${ultimaEvaluacionFinal.oportunidad} con ${ultimaEvaluacionFinal.calificacion}`,
+            estado_parcial: 'aprobado'
+        };
+    }
+
+    // Si reprobó, determinar siguiente oportunidad en la escalera
+    switch (ultimaEvaluacionFinal.oportunidad) {
+        case 'ordinario':
+            return {
+                siguiente_oportunidad: 'remedial',
+                puede_evaluar: true,
+                motivo: `Reprobó en ordinario (${ultimaEvaluacionFinal.calificacion}), puede tomar remedial`,
+                estado_parcial: 'remedial_pendiente'
+            };
+
+        case 'remedial':
+            return {
+                siguiente_oportunidad: 'extraordinario',
+                puede_evaluar: true,
+                motivo: `Reprobó en remedial (${ultimaEvaluacionFinal.calificacion}), puede tomar extraordinario`,
+                estado_parcial: 'extraordinario_pendiente'
+            };
+
+        case 'extraordinario':
+            // Verificar si puede usar última oportunidad
+            if (ultimaOportunidadUsada) {
+                return {
+                    siguiente_oportunidad: null,
+                    puede_evaluar: false,
+                    motivo: 'Reprobó en extraordinario y ya usó su última oportunidad. Debe recursar la materia.',
+                    estado_parcial: 'reprobado_final'
+                };
+            } else {
+                return {
+                    siguiente_oportunidad: 'ultima_oportunidad',
+                    puede_evaluar: true,
+                    motivo: `Reprobó en extraordinario (${ultimaEvaluacionFinal.calificacion}), puede usar su última oportunidad`,
+                    estado_parcial: 'ultima_oportunidad_disponible'
+                };
+            }
+
+        case 'ultima_oportunidad':
+            return {
+                siguiente_oportunidad: null,
+                puede_evaluar: false,
+                motivo: `Reprobó en última oportunidad (${ultimaEvaluacionFinal.calificacion}). Baja definitiva de la carrera.`,
+                estado_parcial: 'baja_definitiva'
+            };
+
+        default:
+            return {
+                siguiente_oportunidad: 'ordinario',
+                puede_evaluar: true,
+                motivo: 'Oportunidad no reconocida, empezar con ordinario',
+                estado_parcial: 'pendiente'
+            };
+    }
+}
 
 export default router;
 
