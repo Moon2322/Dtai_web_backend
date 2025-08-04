@@ -1714,22 +1714,21 @@ router.get('/calificaciones/estadisticas', async (req, res) => {
     }
 });
 
-// Función para calcular calificación final automáticamente
-/* function calcularCalificacionFinal(evaluacionesFinales) {
+function calcularCalificacionFinal(evaluacionesFinales) {
     if (evaluacionesFinales.length === 0) {
         return { calificacion_final: null, estatus: 'cursando' };
     }
     
     // Si hay algún "NA" en las evaluaciones finales → Reprobado
-    const tieneNA = evaluacionesFinales.some(eval => eval.calificacion === 'NA');
+    const tieneNA = evaluacionesFinales.some(e => e.calificacion === 'NA');
     if (tieneNA) {
         return { calificacion_final: 'NA', estatus: 'reprobado' };
     }
     
     // Calcular promedio de las calificaciones aprobadas
     const calificacionesNumericas = evaluacionesFinales
-        .filter(eval => eval.calificacion !== 'NA')
-        .map(eval => parseFloat(eval.calificacion));
+        .filter(e => e.calificacion !== 'NA')
+        .map(e => parseFloat(e.calificacion));
     
     if (calificacionesNumericas.length === 0) {
         return { calificacion_final: null, estatus: 'cursando' };
@@ -1740,13 +1739,17 @@ router.get('/calificaciones/estadisticas', async (req, res) => {
         calificacion_final: promedio.toFixed(1), 
         estatus: 'aprobado' 
     };
-} */
+}
+
 
 // Función para recalcular y actualizar calificación final
-async function recalcularCalificacionFinal(calificacionId) {
+async function recalcularCalificacionFinal(calificacionId, connection = null) {
     try {
+        // Usar la conexión proporcionada o crear una nueva
+        const dbConnection = connection || db;
+        
         // Obtener evaluaciones finales
-        const [evaluacionesFinales] = await db.execute(`
+        const [evaluacionesFinales] = await dbConnection.execute(`
             SELECT numero_parcial, calificacion, aprobado
             FROM evaluaciones_detalle
             WHERE calificacion_id = ? AND es_calificacion_final = TRUE
@@ -1756,14 +1759,15 @@ async function recalcularCalificacionFinal(calificacionId) {
         // Calcular nueva calificación final
         const resultado = calcularCalificacionFinal(evaluacionesFinales);
         
-        // Actualizar tabla principal
-        await db.execute(`
+        // Actualizar tabla principal usando la misma conexión
+        await dbConnection.execute(`
             UPDATE calificaciones 
             SET calificacion_final = ?, estatus = ?, fecha_actualizacion = NOW()
             WHERE id = ?
         `, [resultado.calificacion_final, resultado.estatus, calificacionId]);
         
-        console.log(`✅ Calificación recalculada: ${resultado.calificacion_final}, estatus: ${resultado.estatus}`);
+        console.log(`✅ Calificación final recalculada: ${resultado.calificacion_final} (${resultado.estatus})`);
+        
         return resultado;
         
     } catch (error) {
@@ -1995,8 +1999,7 @@ router.post('/calificaciones/:id/evaluar-parcial', async (req, res) => {
         console.log(`✅ Evaluación guardada: Parcial ${numero_parcial}, ${oportunidad}, ${calificacion}`);
 
         // Recalcular calificación final automáticamente
-        const resultadoCalculo = await recalcularCalificacionFinal(calificacionId);
-
+const resultadoCalculo = await recalcularCalificacionFinal(calificacionId, connection);
         await connection.commit();
 
         res.json({
@@ -2127,6 +2130,93 @@ router.get('/calificaciones/estadisticas', async (req, res) => {
 
     } catch (error) {
         console.error('Error al obtener estadísticas:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+
+// Agregar esta ruta a tu archivo api/profesorRoutes.js
+
+// Inicializar calificación para un estudiante
+router.post('/calificaciones/inicializar', async (req, res) => {
+    try {
+        const { alumno_id, asignatura_id, grupo_id } = req.body;
+
+        // Validaciones básicas
+        if (!alumno_id || !asignatura_id || !grupo_id) {
+            return res.status(400).json({
+                success: false,
+                message: 'Faltan datos obligatorios (alumno_id, asignatura_id, grupo_id)'
+            });
+        }
+
+        // Verificar que el profesor tenga acceso a esta asignatura-grupo
+        const [accesoVerificacion] = await db.execute(`
+            SELECT id, ciclo_escolar FROM profesor_asignatura_grupo 
+            WHERE profesor_id = ? AND asignatura_id = ? AND grupo_id = ? AND activo = 1
+        `, [req.profesor_id, asignatura_id, grupo_id]);
+
+        if (accesoVerificacion.length === 0) {
+            return res.status(403).json({
+                success: false,
+                message: 'No tienes acceso a esta asignatura y grupo'
+            });
+        }
+
+        const cicloEscolar = accesoVerificacion[0].ciclo_escolar;
+
+        // Verificar que el alumno esté inscrito en el grupo
+        const [alumnoEnGrupo] = await db.execute(`
+            SELECT id FROM alumnos_grupos 
+            WHERE alumno_id = ? AND grupo_id = ? AND activo = 1
+        `, [alumno_id, grupo_id]);
+
+        if (alumnoEnGrupo.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'El alumno no está inscrito en este grupo'
+            });
+        }
+
+        // Verificar si ya existe una calificación para este estudiante
+        const [calificacionExistente] = await db.execute(`
+            SELECT id FROM calificaciones 
+            WHERE alumno_id = ? AND asignatura_id = ? AND grupo_id = ? AND profesor_id = ? AND ciclo_escolar = ?
+        `, [alumno_id, asignatura_id, grupo_id, req.profesor_id, cicloEscolar]);
+
+        if (calificacionExistente.length > 0) {
+            // Si ya existe, devolver el ID de la calificación existente
+            return res.json({
+                success: true,
+                message: 'Calificación ya existe',
+                calificacion_id: calificacionExistente[0].id
+            });
+        }
+
+        // Crear nueva calificación inicial
+        const [resultado] = await db.execute(`
+            INSERT INTO calificaciones (
+                alumno_id, 
+                asignatura_id, 
+                grupo_id, 
+                profesor_id, 
+                ciclo_escolar, 
+                estatus, 
+                fecha_captura, 
+                fecha_actualizacion
+            ) VALUES (?, ?, ?, ?, ?, 'en_progreso', NOW(), NOW())
+        `, [alumno_id, asignatura_id, grupo_id, req.profesor_id, cicloEscolar]);
+
+        res.json({
+            success: true,
+            message: 'Calificación inicializada exitosamente',
+            calificacion_id: resultado.insertId
+        });
+
+    } catch (error) {
+        console.error('Error al inicializar calificación:', error);
         res.status(500).json({
             success: false,
             message: 'Error interno del servidor'
