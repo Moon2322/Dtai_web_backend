@@ -1714,6 +1714,426 @@ router.get('/calificaciones/estadisticas', async (req, res) => {
     }
 });
 
+// Función para calcular calificación final automáticamente
+/* function calcularCalificacionFinal(evaluacionesFinales) {
+    if (evaluacionesFinales.length === 0) {
+        return { calificacion_final: null, estatus: 'cursando' };
+    }
+    
+    // Si hay algún "NA" en las evaluaciones finales → Reprobado
+    const tieneNA = evaluacionesFinales.some(eval => eval.calificacion === 'NA');
+    if (tieneNA) {
+        return { calificacion_final: 'NA', estatus: 'reprobado' };
+    }
+    
+    // Calcular promedio de las calificaciones aprobadas
+    const calificacionesNumericas = evaluacionesFinales
+        .filter(eval => eval.calificacion !== 'NA')
+        .map(eval => parseFloat(eval.calificacion));
+    
+    if (calificacionesNumericas.length === 0) {
+        return { calificacion_final: null, estatus: 'cursando' };
+    }
+    
+    const promedio = calificacionesNumericas.reduce((a, b) => a + b, 0) / calificacionesNumericas.length;
+    return { 
+        calificacion_final: promedio.toFixed(1), 
+        estatus: 'aprobado' 
+    };
+} */
+
+// Función para recalcular y actualizar calificación final
+async function recalcularCalificacionFinal(calificacionId) {
+    try {
+        // Obtener evaluaciones finales
+        const [evaluacionesFinales] = await db.execute(`
+            SELECT numero_parcial, calificacion, aprobado
+            FROM evaluaciones_detalle
+            WHERE calificacion_id = ? AND es_calificacion_final = TRUE
+            ORDER BY numero_parcial
+        `, [calificacionId]);
+        
+        // Calcular nueva calificación final
+        const resultado = calcularCalificacionFinal(evaluacionesFinales);
+        
+        // Actualizar tabla principal
+        await db.execute(`
+            UPDATE calificaciones 
+            SET calificacion_final = ?, estatus = ?, fecha_actualizacion = NOW()
+            WHERE id = ?
+        `, [resultado.calificacion_final, resultado.estatus, calificacionId]);
+        
+        console.log(`✅ Calificación recalculada: ${resultado.calificacion_final}, estatus: ${resultado.estatus}`);
+        return resultado;
+        
+    } catch (error) {
+        console.error('Error al recalcular calificación final:', error);
+        throw error;
+    }
+}
+
+// ============================================
+// RUTAS DEL API
+// ============================================
+
+// Obtener calificaciones del profesor (con nuevo sistema)
+router.get('/calificaciones', async (req, res) => {
+    try {
+        const [calificaciones] = await db.execute(`
+            SELECT 
+                c.id,
+                c.calificacion_final,
+                c.estatus,
+                c.observaciones,
+                c.ciclo_escolar,
+                c.fecha_captura,
+                c.fecha_actualizacion,
+                CONCAT(u.nombre, ' ', u.apellido) as estudiante_nombre,
+                a.matricula as estudiante_matricula,
+                asig.nombre as asignatura_nombre,
+                asig.codigo as asignatura_codigo,
+                g.codigo as grupo_codigo,
+                g.cuatrimestre,
+                car.nombre as carrera_nombre,
+                -- Contar parciales evaluados
+                (SELECT COUNT(*) 
+                 FROM evaluaciones_detalle ed 
+                 WHERE ed.calificacion_id = c.id 
+                 AND ed.es_calificacion_final = TRUE) as parciales_completados,
+                -- Obtener detalle de evaluaciones como JSON
+                (SELECT JSON_ARRAYAGG(
+                    JSON_OBJECT(
+                        'numero_parcial', ed.numero_parcial,
+                        'oportunidad', ed.oportunidad,
+                        'calificacion', ed.calificacion,
+                        'fecha_evaluacion', ed.fecha_evaluacion
+                    )
+                 )
+                 FROM evaluaciones_detalle ed 
+                 WHERE ed.calificacion_id = c.id 
+                 AND ed.es_calificacion_final = TRUE) as detalle_parciales
+            FROM calificaciones c
+            JOIN alumnos a ON c.alumno_id = a.id
+            JOIN usuarios u ON a.usuario_id = u.id
+            JOIN asignaturas asig ON c.asignatura_id = asig.id
+            JOIN grupos g ON c.grupo_id = g.id
+            JOIN carreras car ON g.carrera_id = car.id
+            JOIN profesor_asignatura_grupo pag ON (
+                pag.profesor_id = c.profesor_id 
+                AND pag.asignatura_id = c.asignatura_id 
+                AND pag.grupo_id = c.grupo_id
+                AND pag.activo = 1
+            )
+            WHERE c.profesor_id = ?
+            ORDER BY c.fecha_actualizacion DESC
+        `, [req.profesor_id]);
+
+        res.json({
+            success: true,
+            data: calificaciones
+        });
+
+    } catch (error) {
+        console.error('Error al obtener calificaciones:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+
+// Obtener detalle de una calificación específica
+router.get('/calificaciones/:id/detalle', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // Verificar que la calificación pertenece al profesor
+        const [calificacion] = await db.execute(`
+            SELECT c.*, a.matricula, CONCAT(u.nombre, ' ', u.apellido) as estudiante_nombre,
+                   al.ultima_oportunidad_usada
+            FROM calificaciones c
+            JOIN alumnos a ON c.alumno_id = a.id
+            JOIN usuarios u ON a.usuario_id = u.id
+            JOIN alumnos al ON c.alumno_id = al.id
+            WHERE c.id = ? AND c.profesor_id = ?
+        `, [id, req.profesor_id]);
+
+        if (calificacion.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Calificación no encontrada'
+            });
+        }
+
+        // Obtener todas las evaluaciones de esta calificación
+        const [evaluaciones] = await db.execute(`
+            SELECT 
+                numero_parcial,
+                oportunidad,
+                calificacion,
+                fecha_evaluacion,
+                aprobado,
+                es_calificacion_final,
+                observaciones_parcial
+            FROM evaluaciones_detalle
+            WHERE calificacion_id = ?
+            ORDER BY numero_parcial, 
+                     FIELD(oportunidad, 'ordinario', 'remedial', 'extraordinario', 'ultima_oportunidad')
+        `, [id]);
+
+        res.json({
+            success: true,
+            data: {
+                calificacion: calificacion[0],
+                evaluaciones: evaluaciones
+            }
+        });
+
+    } catch (error) {
+        console.error('Error al obtener detalle de calificación:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+
+// Evaluar un parcial específico
+router.post('/calificaciones/:id/evaluar-parcial', async (req, res) => {
+    const connection = await db.getConnection();
+    
+    try {
+        await connection.beginTransaction();
+        
+        const calificacionId = req.params.id;
+        const { 
+            numero_parcial, 
+            oportunidad, 
+            calificacion, 
+            observaciones_parcial 
+        } = req.body;
+
+        // Validaciones básicas
+        if (!numero_parcial || !oportunidad || !calificacion) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'Datos incompletos: parcial, oportunidad y calificación son requeridos'
+            });
+        }
+
+        // Verificar que la calificación pertenece al profesor
+        const [calificacionExiste] = await connection.execute(`
+            SELECT c.*, al.ultima_oportunidad_usada
+            FROM calificaciones c
+            JOIN alumnos al ON c.alumno_id = al.id
+            WHERE c.id = ? AND c.profesor_id = ?
+        `, [calificacionId, req.profesor_id]);
+
+        if (calificacionExiste.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({
+                success: false,
+                message: 'Calificación no encontrada o sin permisos'
+            });
+        }
+
+        // Verificar si puede usar última oportunidad
+        if (oportunidad === 'ultima_oportunidad' && calificacionExiste[0].ultima_oportunidad_usada) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'El alumno ya usó su única oportunidad especial'
+            });
+        }
+
+        // Verificar que no existe ya una evaluación para esta oportunidad
+        const [evaluacionExiste] = await connection.execute(`
+            SELECT id FROM evaluaciones_detalle
+            WHERE calificacion_id = ? AND numero_parcial = ? AND oportunidad = ?
+        `, [calificacionId, numero_parcial, oportunidad]);
+
+        if (evaluacionExiste.length > 0) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'Ya existe una evaluación para esta oportunidad'
+            });
+        }
+
+        // Determinar valores automáticos
+        const aprobado = calificacion !== 'NA';
+        
+        // Si aprobó O es la última oportunidad (aunque sea NA) → es calificación final
+        const esCalificacionFinal = aprobado || oportunidad === 'ultima_oportunidad';
+
+        // Si es calificación final, desactivar evaluaciones anteriores de este parcial
+        if (esCalificacionFinal) {
+            await connection.execute(`
+                UPDATE evaluaciones_detalle 
+                SET es_calificacion_final = FALSE
+                WHERE calificacion_id = ? AND numero_parcial = ?
+            `, [calificacionId, numero_parcial]);
+        }
+
+        // Insertar nueva evaluación
+        const [resultado] = await connection.execute(`
+            INSERT INTO evaluaciones_detalle (
+                calificacion_id, numero_parcial, oportunidad, calificacion,
+                fecha_evaluacion, aprobado, es_calificacion_final, observaciones_parcial
+            ) VALUES (?, ?, ?, ?, NOW(), ?, ?, ?)
+        `, [
+            calificacionId, 
+            numero_parcial, 
+            oportunidad, 
+            calificacion, 
+            aprobado, 
+            esCalificacionFinal,
+            observaciones_parcial || null
+        ]);
+
+        console.log(`✅ Evaluación guardada: Parcial ${numero_parcial}, ${oportunidad}, ${calificacion}`);
+
+        // Recalcular calificación final automáticamente
+        const resultadoCalculo = await recalcularCalificacionFinal(calificacionId);
+
+        await connection.commit();
+
+        res.json({
+            success: true,
+            message: `Evaluación guardada correctamente. ${calificacion !== 'NA' ? 'Aprobado' : 'No aprobado'} en ${oportunidad}`,
+            data: {
+                evaluacion_id: resultado.insertId,
+                calificacion_final: resultadoCalculo.calificacion_final,
+                estatus: resultadoCalculo.estatus,
+                es_calificacion_final: esCalificacionFinal
+            }
+        });
+
+    } catch (error) {
+        await connection.rollback();
+        console.error('Error al evaluar parcial:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor: ' + error.message
+        });
+    } finally {
+        connection.release();
+    }
+});
+
+// Obtener siguiente oportunidad disponible
+router.get('/calificaciones/:id/siguiente-oportunidad/:parcial', async (req, res) => {
+    try {
+        const { id, parcial } = req.params;
+
+        // Obtener última evaluación de este parcial
+        const [ultimaEvaluacion] = await db.execute(`
+            SELECT ed.oportunidad, ed.aprobado, al.ultima_oportunidad_usada
+            FROM evaluaciones_detalle ed
+            JOIN calificaciones c ON ed.calificacion_id = c.id
+            JOIN alumnos al ON c.alumno_id = al.id
+            WHERE ed.calificacion_id = ? AND ed.numero_parcial = ?
+            ORDER BY FIELD(ed.oportunidad, 'ordinario', 'remedial', 'extraordinario', 'ultima_oportunidad') DESC
+            LIMIT 1
+        `, [id, parcial]);
+
+        let siguienteOportunidad = 'ordinario'; // Por defecto
+
+        if (ultimaEvaluacion.length > 0) {
+            const ultima = ultimaEvaluacion[0];
+            
+            // Si ya aprobó, no hay siguiente oportunidad
+            if (ultima.aprobado) {
+                return res.json({
+                    success: true,
+                    data: { 
+                        siguiente_oportunidad: null,
+                        mensaje: 'Ya aprobado'
+                    }
+                });
+            }
+
+            // Determinar siguiente oportunidad
+            switch (ultima.oportunidad) {
+                case 'ordinario':
+                    siguienteOportunidad = 'remedial';
+                    break;
+                case 'remedial':
+                    siguienteOportunidad = 'extraordinario';
+                    break;
+                case 'extraordinario':
+                    if (ultima.ultima_oportunidad_usada) {
+                        siguienteOportunidad = null; // Ya no puede continuar
+                    } else {
+                        siguienteOportunidad = 'ultima_oportunidad';
+                    }
+                    break;
+                case 'ultima_oportunidad':
+                default:
+                    siguienteOportunidad = null; // Fin del camino
+                    break;
+            }
+        }
+
+        res.json({
+            success: true,
+            data: { 
+                siguiente_oportunidad: siguienteOportunidad,
+                puede_continuar: siguienteOportunidad !== null
+            }
+        });
+
+    } catch (error) {
+        console.error('Error al obtener siguiente oportunidad:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+
+// Obtener estadísticas del profesor
+router.get('/calificaciones/estadisticas', async (req, res) => {
+    try {
+        // Estadísticas básicas
+        const [estadisticas] = await db.execute(`
+            SELECT 
+                COUNT(*) as total_calificaciones,
+                COUNT(CASE WHEN calificacion_final != 'NA' AND calificacion_final IS NOT NULL THEN 1 END) as aprobados,
+                COUNT(CASE WHEN calificacion_final = 'NA' THEN 1 END) as reprobados,
+                COUNT(CASE WHEN estatus = 'cursando' THEN 1 END) as cursando,
+                AVG(CASE WHEN calificacion_final != 'NA' AND calificacion_final IS NOT NULL 
+                    THEN CAST(calificacion_final AS DECIMAL(3,1)) END) as promedio_general
+            FROM calificaciones
+            WHERE profesor_id = ?
+        `, [req.profesor_id]);
+
+        // Estadísticas de última oportunidad
+        const [ultimasOportunidades] = await db.execute(`
+            SELECT COUNT(*) as total_ultimas_oportunidades
+            FROM ultima_oportunidad_log uol
+            WHERE uol.profesor_id = ?
+        `, [req.profesor_id]);
+
+        res.json({
+            success: true,
+            data: {
+                ...estadisticas[0],
+                ultimas_oportunidades_usadas: ultimasOportunidades[0].total_ultimas_oportunidades,
+                promedio_general: parseFloat(estadisticas[0].promedio_general || 0).toFixed(2)
+            }
+        });
+
+    } catch (error) {
+        console.error('Error al obtener estadísticas:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+});
+
 export default router;
 
 
