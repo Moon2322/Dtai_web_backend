@@ -23,6 +23,9 @@ import carrerasRoutes from './api/carrerasRoutes.js';
 import foroRoutes from './api/foroRoutes.js';
 import profesorForoRoutes from './api/profesorForoRoutes.js';
 import tutoresRoutes from './api/tutoresRoutes.js';
+import gestionCalificacionesRoutes from './api/gestionCalificacionesRoutes..js';
+import profesorValidacionesRoutes from './api/profesorValidacionesRoutes.js';
+
 
 
 dotenv.config();
@@ -88,6 +91,9 @@ app.use('/api/profesor/estudiantes', profesorEstudiantesRoutes);
 app.use('/api/carreras', carrerasRoutes);
 app.use('/api/foro', foroRoutes);
 app.use('/api/profesor/foro', profesorForoRoutes);
+app.use('/api/gestion-calificaciones', gestionCalificacionesRoutes);
+app.use('/api/profesor', profesorValidacionesRoutes);
+
 
 
 
