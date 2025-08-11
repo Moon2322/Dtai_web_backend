@@ -25,6 +25,7 @@ import profesorForoRoutes from './api/profesorForoRoutes.js';
 import tutoresRoutes from './api/tutoresRoutes.js';
 import gestionCalificacionesRoutes from './api/gestionCalificacionesRoutes..js';
 import profesorValidacionesRoutes from './api/profesorValidacionesRoutes.js';
+import reportesRiesgoRoutes from './api/reportesRiesgoRoutes.js';
 
 
 
@@ -93,6 +94,7 @@ app.use('/api/foro', foroRoutes);
 app.use('/api/profesor/foro', profesorForoRoutes);
 app.use('/api/gestion-calificaciones', gestionCalificacionesRoutes);
 app.use('/api/profesor', profesorValidacionesRoutes);
+app.use('/api', reportesRiesgoRoutes);
 
 
 
